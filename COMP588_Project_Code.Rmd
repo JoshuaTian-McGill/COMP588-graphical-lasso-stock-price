@@ -1,0 +1,818 @@
+---
+title: "COMP588_Project_Code"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r packages}
+
+library(glasso)
+
+library(tidyverse)
+
+library("readxl")
+
+library(condMVNorm)
+
+library(lmtest)
+
+library(lubridate)
+
+library(matlib)
+
+library(matrixcalc)
+
+# install and load required packages
+required.packages <- c('glasso', 'colorRamps', 'igraph', 'RColorBrewer', 'threejs', 'htmlwidgets')
+new.packages <- required.packages[!(required.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages, repos='http://cran.us.r-project.org')
+library(glasso);library(colorRamps);library(igraph);library(RColorBrewer);library(threejs);library(htmlwidgets);
+
+```
+
+
+
+```{r}
+
+my_data <- read_excel("SP500_quarterly_notes_clean.xlsx")
+
+my_data <- my_data[, c(1:100)]
+
+theme_set(theme_classic())
+# str(my_data)
+
+```
+
+
+
+
+```{r}
+
+#format(dmy(my_data$Dates), "%m-%d-%Y")
+
+Dates <- my_data$Dates
+
+Dates <- Dates %>% gsub(pattern = "/", 
+                        replacement = "-")
+
+date <- as.Date(Dates, format = "%m-%d-%Y")
+
+head(date)
+
+str(date)
+
+date <- as.POSIXlt(date)
+
+```
+
+
+```{r}
+
+my_data <- cbind(my_data, date)
+
+my_data <- my_data %>%
+  select(date, everything()) %>%
+  select(-Dates)
+
+```
+
+
+
+```{r}
+
+  
+y_low <- min(my_data$gdp_growth)
+y_high <- max(my_data$gdp_growth)
+
+
+
+my_data %>% ggplot(aes(x = date, y = gdp_growth)) +
+  geom_point() +
+  geom_hline( yintercept = 0, color = "red") +
+  scale_x_datetime(date_labels = '%b %Y', date_breaks = '12 months') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(title="GDP growth rate",
+        x ="Time", y = "GDP growth rate") +
+  scale_y_continuous(breaks=seq(y_low, y_high, 3))
+
+#  scale_x_yearqtr(format = '%Y.q%q') +
+# theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+```{r}
+
+head(my_data)
+
+```
+
+
+```{r}
+
+par(mar=c(3,3,4,0)) ##This margin command should do the trick
+AutoCorrelation <- acf(my_data$gdp)
+#plot(AutoCorrelation, main = "Freeny's Quarterly Revenue Time Series ACF")
+
+
+```
+
+
+
+```{r}
+
+par(mar=c(3,3,4,0)) ##This margin command should do the trick
+AutoCorrelation <- acf(my_data$gdp_growth)
+
+```
+
+
+
+
+```{r}
+
+par(mar=c(3,3,3,0)) ##This margin command should do the trick
+AutoCorrelation <- acf(my_data$`COST UW Equity`)
+
+
+```
+
+
+```{r}
+
+grangertest(gdp_growth ~ gdp, order = 1, data = my_data)
+
+
+```
+
+
+```{r}
+
+my_data_2 <- my_data %>%
+  na.omit()
+
+```
+
+
+
+```{r graphicl lasso training}
+
+my_data_2 <- my_data[-c(102, 103),-c(1)]
+# Exclude 2021Q3 and 2021Q4 from training. Reserve them for testing.
+
+S <- var(my_data_2)
+
+rho <- 0.75
+
+```
+
+
+
+```{r}
+
+invcov <- glasso(S, rho=rho)  
+P <- invcov$wi
+colnames(P) <- colnames(S)
+rownames(P) <- rownames(S)
+# check symmetry
+if(!isSymmetric(P)) {
+  P[lower.tri(P)] = t(P)[lower.tri(P)]  
+}
+
+```
+
+
+```{r}
+
+is.positive.definite(invcov$w, tol=1e-8)
+
+```
+
+
+```{r}
+
+write.csv(P, "test.csv")
+
+```
+
+
+```{r import precision matrix}
+
+A <- read.csv("test.csv")
+
+AA <- as.matrix(A[, -1])
+# AA is precision matrix
+
+class(AA)
+
+rownames(AA) <- colnames(AA)
+
+```
+
+```{r calculate partial correlatoin}
+
+# calculate partial correlation matrix
+parr.corr_2 <- matrix(nrow=nrow(AA), ncol=ncol(AA))
+for(k in 1:nrow(parr.corr_2)) {
+  for(j in 1:ncol(parr.corr_2)) {
+    parr.corr_2[j, k] <- -AA[j,k]/sqrt(AA[j,j]*AA[k,k])
+  }
+}
+colnames(parr.corr_2) <- colnames(AA)
+rownames(parr.corr_2) <- colnames(AA)
+diag(parr.corr_2) <- 0
+
+
+```
+
+
+```{r}
+
+gdp_growth <- parr.corr_2["gdp_growth", ]
+
+df <- data.frame(gdp_growth)
+
+
+df["ticker"] <- rownames(df)
+
+col_order <- c("ticker", "gdp_growth")
+
+df <- df[, col_order] %>%
+  filter(ticker != "gdp_growth")
+
+
+ticker <- df$ticker
+
+ticker <- gsub(".Equity", "", ticker)
+
+ticker <- gsub(".UW", "", ticker)
+
+ticker <- gsub(".UN", "", ticker)
+
+# head(ticker)
+
+
+df$ticker <- ticker
+
+df[1:20, ] %>% ggplot(aes(x = ticker, y = gdp_growth)) +
+  geom_point() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_hline( yintercept = 0, color = "red")
+
+
+
+```
+
+
+```{r}
+
+df_non_zero <- df %>%
+  filter(gdp_growth != 0)
+
+rownames(df_non_zero) <- c(1:dim(df_non_zero)[1])
+
+df_non_zero$ticker <- factor(df_non_zero$ticker, 
+                             levels = df_non_zero$ticker[order(df_non_zero$gdp_growth)])
+# This little trick is to order levels in an ascending order as per *gdp_growht*.
+
+# df_non_zero %>% ggplot(aes(x = ticker, y = gdp_growth)) +
+#   geom_point() +
+#   theme_classic() +
+#   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+#   geom_hline( yintercept = 0, color = "red")
+
+
+df_non_zero %>% ggplot(aes(x = ticker, y = gdp_growth)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_hline( yintercept = 0, color = "red")
+
+```
+
+```{r}
+
+cpi_growth <- parr.corr_2["cpi_growth", ]
+
+df <- data.frame(cpi_growth)
+
+
+df["ticker"] <- rownames(df)
+
+col_order <- c("ticker", "cpi_growth")
+
+df <- df[, col_order] %>%
+  filter(ticker != "cpi_growth")
+
+
+ticker <- df$ticker
+
+ticker <- gsub(".Equity", "", ticker)
+
+ticker <- gsub(".UW", "", ticker)
+
+ticker <- gsub(".UN", "", ticker)
+
+# head(ticker)
+
+
+df$ticker <- ticker
+
+df[1:20, ] %>% ggplot(aes(x = ticker, y = cpi_growth)) +
+  geom_point() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_hline( yintercept = 0, color = "red")
+
+
+```
+
+
+
+```{r}
+
+df_non_zero <- df %>%
+  filter(cpi_growth != 0)
+
+rownames(df_non_zero) <- c(1:dim(df_non_zero)[1])
+
+df_non_zero$ticker <- factor(df_non_zero$ticker, 
+                             levels = df_non_zero$ticker[order(df_non_zero$cpi_growth)])
+# This little trick is to order levels in an ascending order as per *gdp_growth*.
+
+# df_non_zero %>% ggplot(aes(x = ticker, y = gdp_growth)) +
+#   geom_point() +
+#   theme_classic() +
+#   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+#   geom_hline( yintercept = 0, color = "red")
+
+
+df_non_zero %>% ggplot(aes(x = ticker, y = cpi_growth)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_hline( yintercept = 0, color = "red")
+
+```
+
+
+
+```{r testing}
+
+my_data_testing <- my_data[c(102, 103),-c(1)]
+# Extract 2021Q3 and 2021Q4 for testing.
+
+data_mean <- unname(apply(my_data_2, 2, mean))
+
+dependent_var <- c(5:length(data_mean))
+
+independent_var <- c(1:4)
+
+independent_var_value <- c(unname(as.matrix(my_data_testing[1, c(1:4)])))
+
+Sigma <- invcov$w
+
+```
+
+
+```{r}
+
+#is.positive.definite(Sigma)
+
+str(data_mean)
+
+str(independent_var_value)
+
+```
+
+
+
+```{r}
+
+result <- condMVN( mean = data_mean, 
+         sigma = Sigma, 
+         dependent.ind = dependent_var, 
+         given.ind = independent_var,
+         X.given = independent_var_value)
+# condMVN gives the condition mean and covariance matrix
+
+
+```
+
+```{r}
+
+str(result$condMean)
+
+ground_truth <- str(c(as.matrix(my_data_testing[1, dependent_var])))
+
+```
+
+
+
+```{r}
+
+sum(((result$condMean - my_data_testing[1, dependent_var])/my_data_testing[1, dependent_var])^2)
+
+
+```
+
+```{r}
+
+df <- (data.frame(result$condMean - my_data_testing[1, dependent_var]))/my_data_testing[1, dependent_var]
+
+
+```
+
+
+```{r visualize results}
+
+df_long <- df %>%
+  gather(key = ticker,
+         value = error)
+
+
+ticker <- df_long$ticker
+
+ticker <- gsub(".Equity", "", ticker)
+
+ticker <- gsub(".UW", "", ticker)
+
+ticker <- gsub(".UN", "", ticker)
+
+df_long$ticker <- ticker
+
+
+df_long$ticker <- factor(df_long$ticker, 
+                             levels = df_long$ticker[order(df_long$error)])
+# This little trick is to order levels in an ascending order as per *error*.
+
+# df_non_zero %>% ggplot(aes(x = ticker, y = gdp_growth)) +
+#   geom_point() +
+#   theme_classic() +
+#   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+#   geom_hline( yintercept = 0, color = "red")
+
+
+df_long %>% ggplot(aes(x = ticker, y = error)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, 
+                                   vjust = 0.5, 
+                                   hjust=1,
+                                   size = 5)) +
+  geom_hline( yintercept = 0, color = "red")
+
+
+```
+
+
+```{r testing 2}
+
+my_data_testing <- my_data[c(102, 103),-c(1)]
+# Extract 2021Q3 and 2021Q4 for testing.
+
+data_mean <- unname(apply(my_data_2, 2, mean))
+
+dependent_var <- c(5:length(data_mean))
+
+independent_var <- c(1:4)
+
+independent_var_value <- c(unname(as.matrix(my_data_testing[2, c(1:4)])))
+
+Sigma <- invcov$w
+
+
+# is.positive.definite(Sigma)
+
+# str(data_mean)
+
+# str(independent_var_value)
+
+result <- condMVN( mean = data_mean, 
+         sigma = Sigma, 
+         dependent.ind = dependent_var, 
+         given.ind = independent_var,
+         X.given = independent_var_value)
+# condMVN gives the condition mean and covariance matrix
+
+
+```
+
+
+
+
+```{r}
+
+sum(((result$condMean - my_data_testing[2, dependent_var])/my_data_testing[2, dependent_var])^2)
+
+```
+
+```{r}
+
+df <- (data.frame(result$condMean - my_data_testing[2, dependent_var]))/my_data_testing[2, dependent_var]
+
+
+df_long <- df %>%
+  gather(key = ticker,
+         value = error)
+
+
+ticker <- df_long$ticker
+
+ticker <- gsub(".Equity", "", ticker)
+
+ticker <- gsub(".UW", "", ticker)
+
+ticker <- gsub(".UN", "", ticker)
+
+df_long$ticker <- ticker
+
+
+df_long$ticker <- factor(df_long$ticker, 
+                             levels = df_long$ticker[order(df_long$error)])
+# This little trick is to order levels in an ascending order as per *error*.
+
+# df_non_zero %>% ggplot(aes(x = ticker, y = gdp_growth)) +
+#   geom_point() +
+#   theme_classic() +
+#   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+#   geom_hline( yintercept = 0, color = "red")
+
+
+df_long %>% ggplot(aes(x = ticker, y = error)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, 
+                                   vjust = 0.5, 
+                                   hjust=1,
+                                   size = 8)) +
+  geom_hline( yintercept = 0, color = "red")
+
+
+```
+
+
+
+```{r}
+
+# C <- Sigma[dependent_var, independent_var, drop=FALSE]
+# 
+# D <- Sigma[independent_var, independent_var]
+# 
+# CDinv <- C %*% solve(D)
+# 
+# fffff <- independent_var_value - data_mean[independent_var]
+# 
+# str(data_mean[independent_var])
+# 
+# str(fffff)
+# 
+# CDinv %*% t(fffff)
+
+
+
+```
+
+
+
+```{r}
+
+library(shock)
+
+data(mtcars)
+
+head(mtcars)
+
+str(mtcars)
+
+resNet <- networkInferenceGlassoBIC(mtcars)
+
+resNet$A
+
+sum(resNet$A)
+
+```
+
+
+
+```{r}
+
+resNet_rho200 <- networkInferenceGlassoBIC(mtcars, nb.rho = 100000)
+
+resNet_rho200$A
+
+sum(resNet_rho200$A)
+
+```
+
+
+
+```{r}
+
+df[1:2, ]
+
+```
+
+
+```{r}
+
+# 10-dimensional multivariate normal distribution
+n <- 10
+B <- matrix(rnorm(n^2), n, n)
+B <- B %*% t(B)
+# %*% is matrix multiplication
+
+```
+
+
+```{r}
+
+t(B)
+
+```
+
+
+```{r}
+
+str(rep(1,n))
+
+```
+
+
+```{r condMVNorm}
+
+mean <- rep(1,n)
+sigma <- B
+dependent.ind <- c(2,3,5)
+given.ind <- c(1,4,7,9)
+X.given <- c(1,1,0,-1)
+
+condMVN(mean = mean, 
+        sigma = B, 
+        dependent = dependent.ind, 
+        given = given.ind,
+        X.given = X.given)
+# condMVN gives the condition mean and covariance matrix
+
+```
+
+
+
+```{r}
+
+B <- sigma[dependent.ind, dependent.ind]
+C <- sigma[dependent.ind, given.ind, drop=FALSE]
+D <- sigma[given.ind, given.ind]
+CDinv <- C %*% solve(D)
+
+str(X.given - mean[given.ind])
+
+str(CDinv)
+
+
+thing <- X.given - mean[given.ind]
+
+str(thing)
+
+CDinv %*% (thing)
+
+```
+
+
+
+```{r}
+
+c(1,1,0,-1)
+
+```
+
+
+```{r}
+
+pcmvnorm(lower=-Inf, upper=1, mean=rep(1,n), sigma = B, dependent.ind=3,
+given.ind=c(1,4,7,9,10), X.given=c(1,1,0,0,-1))
+# pcmvnorm gives CDF
+
+```
+
+
+```{r}
+
+pcmvnorm(lower=-Inf, upper=c(1,2), mean=rep(1,n), sigma = B,
+dep=c(2,5), given=c(1,4,7,9,10), X=c(1,1,0,0,-1))
+
+```
+
+
+```{r}
+
+pcmvnorm(lower=-Inf, upper=c(1,2), mean=rep(1,n), sigma = B,
+dep=c(2,5))
+
+```
+
+
+```{r}
+
+pcmvnorm(lower = c(1,2), upper = c(1,2), mean=rep(1,n), sigma = B,
+dep=c(2,5))
+
+```
+
+
+
+```{r}
+
+rownames(df)
+
+LETTERS[1:5]
+
+```
+
+
+
+
+```{r}
+
+
+# calculate partial correlation matrix
+parr.corr <- matrix(nrow=nrow(P), ncol=ncol(P))
+for(k in 1:nrow(parr.corr)) {
+  for(j in 1:ncol(parr.corr)) {
+    parr.corr[j, k] <- -P[j,k]/sqrt(P[j,j]*P[k,k])
+  }
+}
+colnames(parr.corr) <- colnames(P)
+rownames(parr.corr) <- colnames(P)
+diag(parr.corr) <- 0
+
+
+```
+
+
+
+```{r}
+
+
+
+
+```
+
+
+
+
+```{r}
+
+all.equal(parr.corr, parr.corr_2)
+
+```
+
+```{r}
+
+# build network graph
+stock_graph <- graph_from_adjacency_matrix(parr.corr, mode="undirected", weighted=TRUE)
+
+# color by cluster
+V(stock_graph)$cluster <- as.numeric(cl$cluster)
+num_clusters <- length(unique(cl$cluster))
+cols <- colorRamps::primary.colors(n=num_clusters+1) # hack to replace black colour with something else
+cols <- cols[2:length(cols)] # hack to replace black colour with something else
+V(stock_graph)$color <- cols[V(stock_graph)$cluster+1]
+
+# drop vertices with no edges
+isolated <-  which(degree(stock_graph) == 0)
+stock_graph <- delete.vertices(stock_graph, isolated)
+
+
+```
+
+```{r}
+
+# make interactive graph
+stock_graph_js <- graphjs(g=stock_graph, 
+                layout_with_fr(stock_graph, weights=30*E(stock_graph)$width, dim=3), # can choose other layout algorithms. `?layout` to get a list
+                # vertex.shape = names(V(ig_wt)),  # plot nodes as tickers rather than circles
+                vertex.size=0.7,
+                vertex.frame.color="white",
+                vertex.frame.width=0.2,
+                vertex.label=names(V(stock_graph)),  # label nodes with tickers
+                brush=TRUE,  # enable highlighting clicked nodes and their connections
+                showLabels=TRUE,  # show node labels on hover
+                edge.alpha=0.6,  # edge opacity - lower helps when there are dense connections
+                bg="black",  # background colour
+                main="Network graph from Graphical Lasso")
+# save graph
+graph_filename <- paste0("./network_graph_rho_", rho, ".html")
+saveWidget(stock_graph_js, file=graph_filename)
+# open in browser
+browseURL(graph_filename)
+
+```
+
+
+
+
